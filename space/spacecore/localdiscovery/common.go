@@ -108,10 +108,10 @@ func filterMulticastInterfacesFor(goos string, ifaces []addrs.NetInterfaceWithAd
 }
 
 func (l *discoveryBase) getDiscoveryPossibility(newAddrs addrs.InterfacesAddrs) DiscoveryPossibility {
-	// some sophisticated logic for ios, because of possible Local Network Restrictions
+	// iOS and macOS both have a Local Network permission: when it is denied,
+	// a connection to our own LAN address fails while the interface is up
 	var err error
-	// we can extend it later to check on another platforms
-	var checkSelfConnect = runtime.GOOS == "ios"
+	var checkSelfConnect = runtime.GOOS == "ios" || runtime.GOOS == "darwin"
 	interfaces := newAddrs.Interfaces
 	for i := range interfaces {
 		iface := &interfaces[i]
@@ -122,6 +122,10 @@ func (l *discoveryBase) getDiscoveryPossibility(newAddrs addrs.InterfacesAddrs) 
 				// en2 used for wired connection
 				continue
 			}
+		}
+		if checkSelfConnect && iface.Flags&gonet.FlagLoopback != 0 {
+			// loopback is exempt from the permission, so it would always pass
+			continue
 		}
 		ifaceAddrs := iface.GetAddr()
 		if len(ifaceAddrs) == 0 {
