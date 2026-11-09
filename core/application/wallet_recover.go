@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/anyproto/any-sync/util/crypto"
+
 	"github.com/anyproto/anytype-heart/pb"
 	"github.com/anyproto/anytype-heart/pkg/lib/core"
 )
@@ -36,15 +38,9 @@ func (s *Service) WalletRecover(req *pb.RpcWalletRecoverRequest) error {
 			return errors.Join(ErrBadInput, fmt.Errorf("invalid account key: %w", err))
 		}
 
-		// Store the derived keys
-		s.derivedKeys = &derivationResult
-
-		// Set session signing key
-		buf := make([]byte, 64)
-		if _, err := rand.Read(buf); err != nil {
-			return err
+		if err := s.setRecoveredKeys(derivationResult); err != nil {
+			return fmt.Errorf("set recovered keys: %w", err)
 		}
-		s.sessionSigningKey = buf
 
 		s.rootPath = req.RootPath
 		s.fulltextPrimaryLanguage = req.FulltextPrimaryLanguage
@@ -58,17 +54,37 @@ func (s *Service) WalletRecover(req *pb.RpcWalletRecoverRequest) error {
 		return errors.Join(ErrBadInput, err)
 	}
 
-	// Store the derived keys
-	s.derivedKeys = &derivationResult
-
-	// Set session signing key
-	buf := make([]byte, 64)
-	if _, err := rand.Read(buf); err != nil {
-		return err
+	if err := s.setRecoveredKeys(derivationResult); err != nil {
+		return fmt.Errorf("set recovered keys: %w", err)
 	}
-	s.sessionSigningKey = buf
 
 	s.rootPath = req.RootPath
 	s.fulltextPrimaryLanguage = req.FulltextPrimaryLanguage
+	return nil
+}
+
+// setRecoveredKeys stores the derived keys and picks the session signing key.
+// Recovering the wallet that is already loaded keeps the current signing key:
+// a client recovers again while other clients still hold sessions (every
+// desktop tab logs in on its own after the machine wakes), and a new key would
+// fail the signature check of every live token. A different wallet gets a new
+// key, so no token of the previous wallet stays valid.
+// The caller must hold s.lock.
+func (s *Service) setRecoveredKeys(derived crypto.DerivationResult) error {
+	sameWallet := s.derivedKeys != nil &&
+		len(s.sessionSigningKey) > 0 &&
+		s.derivedKeys.Identity.GetPublic().Account() == derived.Identity.GetPublic().Account()
+
+	s.derivedKeys = &derived
+
+	if sameWallet {
+		return nil
+	}
+
+	buf := make([]byte, 64)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Errorf("generate session signing key: %w", err)
+	}
+	s.sessionSigningKey = buf
 	return nil
 }
