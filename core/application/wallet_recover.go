@@ -63,13 +63,9 @@ func (s *Service) WalletRecover(req *pb.RpcWalletRecoverRequest) error {
 	return nil
 }
 
-// setRecoveredKeys stores the derived keys and picks the session signing key.
-// Recovering the wallet that is already loaded keeps the current signing key:
-// a client recovers again while other clients still hold sessions (every
-// desktop tab logs in on its own after the machine wakes), and a new key would
-// fail the signature check of every live token. A different wallet gets a new
-// key, so no token of the previous wallet stays valid.
-// The caller must hold s.lock.
+// setRecoveredKeys stores the derived keys. It keeps the session signing key
+// when the same wallet is recovered again, so live tokens stay valid, and
+// generates a new one for a different wallet. The caller must hold s.lock.
 func (s *Service) setRecoveredKeys(derived crypto.DerivationResult) error {
 	sameWallet := s.derivedKeys != nil &&
 		len(s.sessionSigningKey) > 0 &&
