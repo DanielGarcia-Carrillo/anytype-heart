@@ -7,6 +7,7 @@ on:
 
 jobs:
   smoke-test:
+    if: ${{ github.repository_owner == 'anyproto' }}
     name: Run Smoke Tests
     runs-on: ubuntu-latest
     timeout-minutes: 30
