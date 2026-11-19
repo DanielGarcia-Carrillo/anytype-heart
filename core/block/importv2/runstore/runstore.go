@@ -25,7 +25,6 @@ import (
 	anystore "github.com/anyproto/any-store/v2"
 	"github.com/anyproto/any-store/v2/anyenc"
 	"github.com/anyproto/any-store/v2/query"
-	sqlite "github.com/anyproto/go-sqlite"
 
 	"github.com/anyproto/anytype-heart/pkg/lib/localstore/objectstore/anystorehelper"
 	"github.com/anyproto/anytype-heart/pkg/lib/logging"
@@ -161,7 +160,10 @@ const (
 // Store is one run's durable state. Record methods are safe for concurrent
 // worker use (any-store serializes writers; the arena pool guards encoding).
 type Store struct {
-	dir      string
+	dir string
+	// handle is the process's shared handle of the run db (dbhandle.go);
+	// db is its database.
+	handle   *dbHandle
 	db       anystore.DB
 	manifest anystore.Collection
 	entries  anystore.Collection
@@ -305,20 +307,22 @@ func RunsRoot(repoPath string) string {
 //     guarantees is no run-content mutation and no db materialisation, not
 //     byte-identical files.
 //
-// The returned Store must only be used for reads; Close releases only the
-// db handle. Concurrent with a live writer this is a plain extra SQLite
-// connection (WAL) — safe, at the documented cost of read-transaction
-// pressure on the writer's latency.
+// The returned Store must only be used for reads; Close releases only its
+// hold on the db handle. Beside a live writer in this process the reader
+// shares the writer's handle (any-store v2 opens a file once per process):
+// no second open, so nothing of the writer's open state — its sentinel
+// included — is touched.
 func OpenStatusReader(ctx context.Context, dir string) (*Store, error) {
 	dbPath := filepath.Join(dir, dbFileName)
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, fmt.Errorf("no run db to read: %w", err)
 	}
-	db, err := anystore.Open(ctx, dbPath, &anystore.Config{ReadConcurrency: 1})
+	handle, err := acquireDb(ctx, dbPath, false, &anystore.Config{ReadConcurrency: 1})
 	if err != nil {
 		return nil, fmt.Errorf("open run db (status): %w", err)
 	}
-	s := &Store{dir: dir, db: db, arenas: &anyenc.ArenaPool{}, readOnly: true}
+	db := handle.db
+	s := &Store{dir: dir, handle: handle, db: db, arenas: &anyenc.ArenaPool{}, readOnly: true}
 	s.released.Store(true) // no guard was taken; Close must not release one
 	for _, coll := range []struct {
 		name   string
@@ -332,8 +336,7 @@ func OpenStatusReader(ctx context.Context, dir string) (*Store, error) {
 		{collKv, &s.kv},
 	} {
 		if *coll.target, err = db.OpenCollection(ctx, coll.name); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("open collection %s (status): %w", coll.name, err)
+			return nil, errors.Join(fmt.Errorf("open collection %s (status): %w", coll.name, err), handle.release())
 		}
 	}
 	m, err := s.Manifest(ctx)
@@ -382,15 +385,12 @@ func IsMissingManifest(err error) bool {
 // (as opposed to transient IO trouble) — the sweep's delete-dir criterion,
 // so it must never fire on a recoverable condition.
 //
-// Classification is deliberately narrow:
-//   - the fork's codes are checked directly (anystorehelper classifies by
-//     zombiezen.com/go/sqlite codes, which cannot unwrap the
-//     github.com/anyproto/go-sqlite error type any-store v0.4.7 emits);
-//   - only CORRUPT and NOTADB count — CANTOPEN is excluded on purpose: it
-//     also means EACCES, fd exhaustion and some disk-full paths, none of
-//     which is a damaged file (the provider's reinit path counts CANTOPEN
-//     as corruption; deleting a run ledger on a permission hiccup is the
-//     wrong trade here).
+// Classification is deliberately narrow: only any-store's ErrCorrupt
+// umbrella (a damaged header, WAL or page, a failed quick check) and an
+// incompatible file version count. An IO error from opening the file —
+// EACCES, fd exhaustion, a full disk — is none of these: it is not a
+// damaged file, and deleting a run ledger on a permission hiccup is the
+// wrong trade here.
 func IsCorrupted(err error) bool {
 	if err == nil {
 		return false
@@ -399,23 +399,12 @@ func IsCorrupted(err error) bool {
 	// quick-check failure as ErrQuickCheckFailed — including a shutdown's
 	// cancellation and the check's own five-minute cap — and the quick
 	// check runs only on dirty-sentinel dirs, i.e. exactly the crashed runs
-	// whose ledgers hold uncompensated effects. A ctx-shaped or
-	// SQLITE_INTERRUPT cause means "try again next start", never "unlink
-	// the ledger".
+	// whose ledgers hold uncompensated effects. A ctx-shaped cause means
+	// "try again next start", never "unlink the ledger".
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if sqlite.ErrCode(err) == sqlite.ResultInterrupt {
-		return false
-	}
-	if errors.Is(err, anystore.ErrQuickCheckFailed) || errors.Is(err, anystore.ErrIncompatibleVersion) {
-		return true
-	}
-	switch sqlite.ErrCode(err) {
-	case sqlite.ResultCorrupt, sqlite.ResultNotADB:
-		return true
-	}
-	return false
+	return errors.Is(err, anystore.ErrCorrupt) || errors.Is(err, anystore.ErrIncompatibleVersion)
 }
 
 // Create makes the run dir (with its spill subdir), opens a fresh store and
@@ -559,11 +548,12 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 }
 
 func open(ctx context.Context, dir string) (*Store, error) {
-	db, err := anystore.Open(ctx, filepath.Join(dir, dbFileName), storeConfig())
+	handle, err := acquireDb(ctx, filepath.Join(dir, dbFileName), true, storeConfig())
 	if err != nil {
 		return nil, fmt.Errorf("open run db: %w", err)
 	}
-	s := &Store{dir: dir, db: db, arenas: &anyenc.ArenaPool{}}
+	db := handle.db
+	s := &Store{dir: dir, handle: handle, db: db, arenas: &anyenc.ArenaPool{}}
 	for _, coll := range []struct {
 		name   string
 		target *anystore.Collection
@@ -576,15 +566,13 @@ func open(ctx context.Context, dir string) (*Store, error) {
 		{collKv, &s.kv},
 	} {
 		if *coll.target, err = db.Collection(ctx, coll.name); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("open collection %s: %w", coll.name, err)
+			return nil, errors.Join(fmt.Errorf("open collection %s: %w", coll.name, err), handle.release())
 		}
 	}
 	// The one secondary index the design keeps: compensation and
 	// diagnostics look effects up by final object id.
 	if err = anystorehelper.AddIndexes(ctx, s.entries, []anystore.IndexInfo{{Fields: []string{"objectId"}}}); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ensure entries index: %w", err)
+		return nil, errors.Join(fmt.Errorf("ensure entries index: %w", err), handle.release())
 	}
 	return s, nil
 }
@@ -1182,7 +1170,7 @@ func (s *Store) closeDb() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	return s.db.Close()
+	return s.handle.release()
 }
 
 // releaseGuard releases this Store's registry hold exactly once.
