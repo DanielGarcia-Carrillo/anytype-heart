@@ -25,7 +25,6 @@ import (
 	anystore "github.com/anyproto/any-store/v2"
 	"github.com/anyproto/any-store/v2/anyenc"
 	"github.com/anyproto/any-store/v2/query"
-	sqlite "github.com/anyproto/go-sqlite"
 
 	"github.com/anyproto/anytype-heart/pkg/lib/localstore/objectstore/anystorehelper"
 	"github.com/anyproto/anytype-heart/pkg/lib/logging"
@@ -382,15 +381,12 @@ func IsMissingManifest(err error) bool {
 // (as opposed to transient IO trouble) — the sweep's delete-dir criterion,
 // so it must never fire on a recoverable condition.
 //
-// Classification is deliberately narrow:
-//   - the fork's codes are checked directly (anystorehelper classifies by
-//     zombiezen.com/go/sqlite codes, which cannot unwrap the
-//     github.com/anyproto/go-sqlite error type any-store v0.4.7 emits);
-//   - only CORRUPT and NOTADB count — CANTOPEN is excluded on purpose: it
-//     also means EACCES, fd exhaustion and some disk-full paths, none of
-//     which is a damaged file (the provider's reinit path counts CANTOPEN
-//     as corruption; deleting a run ledger on a permission hiccup is the
-//     wrong trade here).
+// Classification is deliberately narrow: only any-store's ErrCorrupt
+// umbrella (a damaged header, WAL or page, a failed quick check) and an
+// incompatible file version count. An IO error from opening the file —
+// EACCES, fd exhaustion, a full disk — is none of these: it is not a
+// damaged file, and deleting a run ledger on a permission hiccup is the
+// wrong trade here.
 func IsCorrupted(err error) bool {
 	if err == nil {
 		return false
@@ -399,23 +395,12 @@ func IsCorrupted(err error) bool {
 	// quick-check failure as ErrQuickCheckFailed — including a shutdown's
 	// cancellation and the check's own five-minute cap — and the quick
 	// check runs only on dirty-sentinel dirs, i.e. exactly the crashed runs
-	// whose ledgers hold uncompensated effects. A ctx-shaped or
-	// SQLITE_INTERRUPT cause means "try again next start", never "unlink
-	// the ledger".
+	// whose ledgers hold uncompensated effects. A ctx-shaped cause means
+	// "try again next start", never "unlink the ledger".
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
-	if sqlite.ErrCode(err) == sqlite.ResultInterrupt {
-		return false
-	}
-	if errors.Is(err, anystore.ErrQuickCheckFailed) || errors.Is(err, anystore.ErrIncompatibleVersion) {
-		return true
-	}
-	switch sqlite.ErrCode(err) {
-	case sqlite.ResultCorrupt, sqlite.ResultNotADB:
-		return true
-	}
-	return false
+	return errors.Is(err, anystore.ErrCorrupt) || errors.Is(err, anystore.ErrIncompatibleVersion)
 }
 
 // Create makes the run dir (with its spill subdir), opens a fresh store and
