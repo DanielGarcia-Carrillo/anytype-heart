@@ -430,10 +430,30 @@ func (e FilterEq) AnystoreFilter() query.Filter {
 	// TODO: GO-5616 Remove logging
 	e.logIfInvalidValue()
 
-	return query.Key{
+	filter := query.Key{
 		Path:   path,
 		Filter: query.NewCompValue(op, e.Value.ToAnyEnc(&anyenc.Arena{})),
 	}
+	if e.matchesMissing() {
+		// any-store v2 compares only within one type, so $lt/$lte never
+		// match a missing or null field. FilterObject (domain.Value.Compare)
+		// orders a missing or null value below every other value, as v1 did.
+		return query.Or{
+			filter,
+			query.Key{Path: path, Filter: query.NewComp(query.CompOpEq, nil)},
+		}
+	}
+	return filter
+}
+
+// matchesMissing reports whether the filter holds for an object without the
+// key: a missing or null value sorts below every non-null one, so only
+// Less and LessOrEqual against a non-null value match it.
+func (e FilterEq) matchesMissing() bool {
+	if e.Value.IsNull() || !e.Value.Ok() {
+		return false
+	}
+	return e.Cond == model.BlockContentDataviewFilter_Less || e.Cond == model.BlockContentDataviewFilter_LessOrEqual
 }
 
 // TODO: GO-5616 Remove logging when we understand what filters clients pass as []string values
