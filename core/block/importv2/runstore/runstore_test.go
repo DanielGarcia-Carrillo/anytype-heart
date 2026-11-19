@@ -727,7 +727,12 @@ func TestFrozenCoreRawFields(t *testing.T) {
 			name := fmt.Sprintf("frozen-v%d", version)
 			workDir := filepath.Join(t.TempDir(), name)
 			copyDir(t, filepath.Join("testdata", name), workDir)
-			assertFrozenFields(t, filepath.Join(workDir, "run.db"))
+			// The committed fixtures predate any-store v2: read them the way
+			// the store does, through the migration of its first open.
+			dbPath := filepath.Join(workDir, "run.db")
+			_, err := v1Migrator.MigrateFile(ctx, dbPath)
+			require.NoError(t, err)
+			assertFrozenFields(t, dbPath)
 		})
 	}
 

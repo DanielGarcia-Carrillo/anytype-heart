@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	anystore "github.com/anyproto/any-store/v2"
+
+	"github.com/anyproto/anytype-heart/pkg/lib/datastore/anystoremigrate"
 )
 
 // dbHandle is the one any-store handle of a run db in this process.
@@ -44,6 +46,13 @@ var (
 	handlesMu sync.Mutex
 	handles   = map[string]*dbHandle{}
 )
+
+// v1Migrator moves a run db written before the any-store v2 switch to v2
+// on its first writable open: the run dir of an import that crashed or was
+// suspended under an older version still holds effects to compensate or
+// resume. It keeps the v1 file beside the migrated db as run.db.v1; the
+// run dir's disposal removes both.
+var v1Migrator = anystoremigrate.New(anystoremigrate.Options{DstConfig: storeConfig()})
 
 // acquireDb returns the process's handle of the run db at path, opening it
 // with config when no handle exists. Every successful call is paired with
@@ -88,9 +97,19 @@ func acquireDb(ctx context.Context, path string, writable bool, config *anystore
 	}
 }
 
+// open opens the db of a new handle. A writable open first migrates a v1
+// file; a status reader never does (it must not rewrite the run db), so it
+// fails on a v1 file until the startup sweep has opened the dir.
 func (h *dbHandle) open(ctx context.Context, config *anystore.Config) (*dbHandle, error) {
 	defer close(h.opened)
-	h.db, h.err = anystore.Open(ctx, h.path, config)
+	if h.writable {
+		if _, err := v1Migrator.MigrateFile(ctx, h.path); err != nil {
+			h.err = fmt.Errorf("migrate the any-store v1 run db: %w", err)
+		}
+	}
+	if h.err == nil {
+		h.db, h.err = anystore.Open(ctx, h.path, config)
+	}
 	if h.err != nil {
 		handlesMu.Lock()
 		delete(handles, h.path)
