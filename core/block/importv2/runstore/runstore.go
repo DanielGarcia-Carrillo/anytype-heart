@@ -336,8 +336,7 @@ func OpenStatusReader(ctx context.Context, dir string) (*Store, error) {
 		{collKv, &s.kv},
 	} {
 		if *coll.target, err = db.OpenCollection(ctx, coll.name); err != nil {
-			_ = handle.release()
-			return nil, fmt.Errorf("open collection %s (status): %w", coll.name, err)
+			return nil, errors.Join(fmt.Errorf("open collection %s (status): %w", coll.name, err), handle.release())
 		}
 	}
 	m, err := s.Manifest(ctx)
@@ -567,15 +566,13 @@ func open(ctx context.Context, dir string) (*Store, error) {
 		{collKv, &s.kv},
 	} {
 		if *coll.target, err = db.Collection(ctx, coll.name); err != nil {
-			_ = handle.release()
-			return nil, fmt.Errorf("open collection %s: %w", coll.name, err)
+			return nil, errors.Join(fmt.Errorf("open collection %s: %w", coll.name, err), handle.release())
 		}
 	}
 	// The one secondary index the design keeps: compensation and
 	// diagnostics look effects up by final object id.
 	if err = anystorehelper.AddIndexes(ctx, s.entries, []anystore.IndexInfo{{Fields: []string{"objectId"}}}); err != nil {
-		_ = handle.release()
-		return nil, fmt.Errorf("ensure entries index: %w", err)
+		return nil, errors.Join(fmt.Errorf("ensure entries index: %w", err), handle.release())
 	}
 	return s, nil
 }
