@@ -160,7 +160,10 @@ const (
 // Store is one run's durable state. Record methods are safe for concurrent
 // worker use (any-store serializes writers; the arena pool guards encoding).
 type Store struct {
-	dir      string
+	dir string
+	// handle is the process's shared handle of the run db (dbhandle.go);
+	// db is its database.
+	handle   *dbHandle
 	db       anystore.DB
 	manifest anystore.Collection
 	entries  anystore.Collection
@@ -304,20 +307,22 @@ func RunsRoot(repoPath string) string {
 //     guarantees is no run-content mutation and no db materialisation, not
 //     byte-identical files.
 //
-// The returned Store must only be used for reads; Close releases only the
-// db handle. Concurrent with a live writer this is a plain extra SQLite
-// connection (WAL) — safe, at the documented cost of read-transaction
-// pressure on the writer's latency.
+// The returned Store must only be used for reads; Close releases only its
+// hold on the db handle. Beside a live writer in this process the reader
+// shares the writer's handle (any-store v2 opens a file once per process):
+// no second open, so nothing of the writer's open state — its sentinel
+// included — is touched.
 func OpenStatusReader(ctx context.Context, dir string) (*Store, error) {
 	dbPath := filepath.Join(dir, dbFileName)
 	if _, err := os.Stat(dbPath); err != nil {
 		return nil, fmt.Errorf("no run db to read: %w", err)
 	}
-	db, err := anystore.Open(ctx, dbPath, &anystore.Config{ReadConcurrency: 1})
+	handle, err := acquireDb(ctx, dbPath, false, &anystore.Config{ReadConcurrency: 1})
 	if err != nil {
 		return nil, fmt.Errorf("open run db (status): %w", err)
 	}
-	s := &Store{dir: dir, db: db, arenas: &anyenc.ArenaPool{}, readOnly: true}
+	db := handle.db
+	s := &Store{dir: dir, handle: handle, db: db, arenas: &anyenc.ArenaPool{}, readOnly: true}
 	s.released.Store(true) // no guard was taken; Close must not release one
 	for _, coll := range []struct {
 		name   string
@@ -331,7 +336,7 @@ func OpenStatusReader(ctx context.Context, dir string) (*Store, error) {
 		{collKv, &s.kv},
 	} {
 		if *coll.target, err = db.OpenCollection(ctx, coll.name); err != nil {
-			_ = db.Close()
+			_ = handle.release()
 			return nil, fmt.Errorf("open collection %s (status): %w", coll.name, err)
 		}
 	}
@@ -544,11 +549,12 @@ func Open(ctx context.Context, dir string) (*Store, error) {
 }
 
 func open(ctx context.Context, dir string) (*Store, error) {
-	db, err := anystore.Open(ctx, filepath.Join(dir, dbFileName), storeConfig())
+	handle, err := acquireDb(ctx, filepath.Join(dir, dbFileName), true, storeConfig())
 	if err != nil {
 		return nil, fmt.Errorf("open run db: %w", err)
 	}
-	s := &Store{dir: dir, db: db, arenas: &anyenc.ArenaPool{}}
+	db := handle.db
+	s := &Store{dir: dir, handle: handle, db: db, arenas: &anyenc.ArenaPool{}}
 	for _, coll := range []struct {
 		name   string
 		target *anystore.Collection
@@ -561,14 +567,14 @@ func open(ctx context.Context, dir string) (*Store, error) {
 		{collKv, &s.kv},
 	} {
 		if *coll.target, err = db.Collection(ctx, coll.name); err != nil {
-			_ = db.Close()
+			_ = handle.release()
 			return nil, fmt.Errorf("open collection %s: %w", coll.name, err)
 		}
 	}
 	// The one secondary index the design keeps: compensation and
 	// diagnostics look effects up by final object id.
 	if err = anystorehelper.AddIndexes(ctx, s.entries, []anystore.IndexInfo{{Fields: []string{"objectId"}}}); err != nil {
-		_ = db.Close()
+		_ = handle.release()
 		return nil, fmt.Errorf("ensure entries index: %w", err)
 	}
 	return s, nil
@@ -1167,7 +1173,7 @@ func (s *Store) closeDb() error {
 	if !s.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	return s.db.Close()
+	return s.handle.release()
 }
 
 // releaseGuard releases this Store's registry hold exactly once.
