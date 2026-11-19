@@ -355,6 +355,60 @@ func TestActiveRegistry(t *testing.T) {
 	})
 }
 
+func TestSharedDbHandle(t *testing.T) {
+	t.Run("an open waits for a status reader holding the db alone, then opens it writable", func(t *testing.T) {
+		// given — any-store opens a file once per process, and the reader's
+		// handle carries no durability settings, so the open must not join it
+		ctx := context.Background()
+		dir := filepath.Join(t.TempDir(), "run-1")
+		require.NoError(t, createStore(t, dir).Close())
+		reader, err := OpenStatusReader(ctx, dir)
+		require.NoError(t, err)
+
+		// when
+		type result struct {
+			store *Store
+			err   error
+		}
+		opened := make(chan result, 1)
+		go func() {
+			store, err := Open(ctx, dir)
+			opened <- result{store, err}
+		}()
+
+		// then
+		select {
+		case <-opened:
+			t.Fatal("the open must wait for the reader to release the db")
+		case <-time.After(100 * time.Millisecond):
+		}
+		require.NoError(t, reader.Close())
+		got := <-opened
+		require.NoError(t, got.err)
+		assert.True(t, got.store.handle.writable)
+		require.NoError(t, got.store.RecordCreated(ctx, "page-1", "obj-1"))
+		require.NoError(t, got.store.Close())
+	})
+
+	t.Run("the last holder closes the db, so the file opens again", func(t *testing.T) {
+		// given
+		ctx := context.Background()
+		dir := filepath.Join(t.TempDir(), "run-1")
+		first := createStore(t, dir)
+		second, err := Open(ctx, dir)
+		require.NoError(t, err)
+
+		// when
+		require.NoError(t, first.Close())
+		require.NoError(t, second.Close())
+
+		// then
+		db, err := anystore.Open(ctx, filepath.Join(dir, dbFileName), nil)
+		require.NoError(t, err, "no handle of the process may still hold the file")
+		require.NoError(t, db.Close())
+	})
+}
+
 func TestCreateGuardsItsDir(t *testing.T) {
 	t.Run("a run dir is active from the moment it exists on disk", func(t *testing.T) {
 		// given — C2 (CONFIRMED, 156/200 probe): markActive fired at the END
