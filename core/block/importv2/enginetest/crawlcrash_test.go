@@ -125,12 +125,8 @@ func TestCrashResumeMidCrawl(t *testing.T) {
 			"spool rows must be unique per key — a duplicate row means the backstop failed")
 		assert.GreaterOrEqual(t, resumedCount, partialCount)
 		// absolute observable, not control-relative (review Class H rule):
-		// the pinned fixture mtime must survive the crawl restart too
-		wantTs := crashFixtureMtime.Unix()
-		assert.Equal(t, map[string]int64{
-			"Home": wantTs, "A": wantTs, "B": wantTs, "C": wantTs, "D": wantTs,
-			"Author": 0, "Zettel": 0, "Markdown Import": 0,
-		}, fx.OriginalTimestamps())
+		// the source files' creation times must survive the crawl restart too
+		assert.Equal(t, crashTreeCreated(t, root), fx.OriginalTimestamps())
 	})
 
 	t.Run("killed mid-crawl TWICE: two partial recordings still converge to one clean import", func(t *testing.T) {
