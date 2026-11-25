@@ -117,6 +117,26 @@ func TestEq_FilterObject(t *testing.T) {
 			assertFilter(t, eq, g, false)
 		})
 	})
+	t.Run("missing or null value sorts below every value", func(t *testing.T) {
+		missing := domain.NewDetailsFromMap(map[domain.RelationKey]domain.Value{})
+		null := domain.NewDetailsFromMap(map[domain.RelationKey]domain.Value{"k": domain.Null()})
+		for _, tc := range []struct {
+			cond model.BlockContentDataviewFilterCondition
+			want bool
+		}{
+			{model.BlockContentDataviewFilter_Less, true},
+			{model.BlockContentDataviewFilter_LessOrEqual, true},
+			{model.BlockContentDataviewFilter_Greater, false},
+			{model.BlockContentDataviewFilter_GreaterOrEqual, false},
+		} {
+			t.Run(tc.cond.String(), func(t *testing.T) {
+				eq := FilterEq{Key: "k", Value: domain.Float64(2), Cond: tc.cond}
+				assertFilter(t, eq, missing, tc.want)
+				assertFilter(t, eq, null, tc.want)
+				assertFilter(t, FilterNot{Filter: eq}, missing, !tc.want)
+			})
+		}
+	})
 	t.Run("not equal", func(t *testing.T) {
 		eq := FilterEq{Key: "k", Value: domain.Float64(2), Cond: model.BlockContentDataviewFilter_NotEqual}
 		obj := domain.NewDetailsFromMap(map[domain.RelationKey]domain.Value{"k": domain.Float64(1)})
