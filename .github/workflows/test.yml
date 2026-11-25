@@ -22,24 +22,23 @@ jobs:
       GOPRIVATE: github.com/anyproto
       GOTOOLCHAIN: local
     steps:
-      - name: Install Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          check-latest: true
       - name: git config
         run: git config --global url.https://${{ secrets.ANYTYPE_PAT }}@github.com/.insteadOf https://github.com/
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Install Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
       - name: Setup GO env
         run: |
           echo GOPATH=$(go env GOPATH) >> $GITHUB_ENV
           echo GOBIN=$(go env GOPATH)/bin >> $GITHUB_ENV
           echo $(go env GOPATH)/bin >> $GITHUB_PATH
       - name: Setup license repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: anyproto/open
           ref: refs/heads/main
@@ -81,7 +80,7 @@ jobs:
           fi
       - name: Upload codegen patch
         if: steps.codegen.outputs.has_changes == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codegen-diff
           path: codegen.patch
@@ -125,8 +124,8 @@ jobs:
           CGO_CFLAGS="-Wno-deprecated-non-prototype -Wno-unknown-warning-option -Wno-deprecated-declarations -Wno-xor-used-as-pow -Wno-single-bit-bitfield-constant-conversion" go test ./cmd/grpcserver
 
       - name: Publish Test Report
-        uses: mikepenz/action-junit-report@v6
+        uses: mikepenz/action-junit-report@a16be3a69023e9bd7e748ede768b3282ea7b30ce # v6.7.1
         with:
           report_paths: '~/gotestsum-report/gotestsum-report.xml'
           github_token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: seriousben/go-patch-cover-action@v1
+      - uses: seriousben/go-patch-cover-action@cfcc02f47551a521e0a6b6dee5d089ea2ffd2b86 # v1.1.2
