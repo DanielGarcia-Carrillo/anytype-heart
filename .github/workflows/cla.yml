@@ -14,5 +14,5 @@ permissions:
 jobs:
   cla-check:
     if: ${{ github.repository_owner == 'anyproto' }}
-    uses: anyproto/open/.github/workflows/cla.yml@main
+    uses: anyproto/open/.github/workflows/cla.yml@0aa34dbc653ff6c522675bb9bdab8743f34122dc # main as of 2026-11-24
     secrets: inherit
