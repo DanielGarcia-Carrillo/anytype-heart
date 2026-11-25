@@ -18,6 +18,7 @@ import (
 
 	"github.com/anyproto/anytype-heart/core/block/editor/state"
 	"github.com/anyproto/anytype-heart/core/block/editor/template"
+	"github.com/anyproto/anytype-heart/core/block/import/common/filetime"
 	importv2 "github.com/anyproto/anytype-heart/core/block/importv2"
 	"github.com/anyproto/anytype-heart/core/domain"
 	"github.com/anyproto/anytype-heart/pkg/lib/bundle"
@@ -36,11 +37,30 @@ import (
 // crashTree is the shared source: five linked pages (c.md references the
 // FIRST page — a late row resolving against a possibly-skipped early row),
 // an image, and front-matter deriving a relation and a type.
-// crashFixtureMtime pins every fixture file's mtime, so the mtime-derived
-// original-created timestamps have an ABSOLUTE expected value (review
-// Class H, the structural finding: control==resumed equality alone cannot
-// catch a systematic drop — both sides go to zero together).
+// crashFixtureMtime pins every fixture file's mtime. The original-created
+// timestamps come from the file's creation time as the platform reports it
+// (filetime.ExtractFileTimes), which only some platforms let a test set, so
+// their ABSOLUTE expected values are read back from the files themselves
+// (crashTreeCreated) — review Class H, the structural finding:
+// control==resumed equality alone cannot catch a systematic drop — both
+// sides go to zero together.
 var crashFixtureMtime = time.Unix(1700000000, 0)
+
+// crashTreeCreated is the original-created timestamp each crashTree object
+// must carry: the creation time of its source file, as the converter reads
+// it, and never zero. Derived objects carry none.
+func crashTreeCreated(t *testing.T, root string) map[string]int64 {
+	t.Helper()
+	want := map[string]int64{"Author": 0, "Zettel": 0, "Markdown Import": 0}
+	for name, file := range map[string]string{
+		"Home": "index.md", "A": "notes/a.md", "B": "notes/b.md", "C": "notes/c.md", "D": "notes/d.md",
+	} {
+		created, _ := filetime.ExtractFileTimes(filepath.Join(root, file))
+		require.NotZero(t, created, "the platform must report a creation time for %s", file)
+		want[name] = created
+	}
+	return want
+}
 
 func crashTree(t *testing.T) string {
 	root := writeTree(t, map[string]string{
@@ -129,13 +149,9 @@ func TestCrashResumeMidCreate(t *testing.T) {
 			"the final object set must be identical to the uninterrupted run")
 		// ABSOLUTE, not control-relative (review Class H: with
 		// stampProvenance dropping the field, control and resumed both went
-		// to zero and the equality stayed green): the fixture mtime is
-		// pinned, so the surviving value is a literal.
-		wantTs := crashFixtureMtime.Unix()
-		assert.Equal(t, map[string]int64{
-			"Home": wantTs, "A": wantTs, "B": wantTs, "C": wantTs, "D": wantTs,
-			"Author": 0, "Zettel": 0, "Markdown Import": 0,
-		}, fx.OriginalTimestamps(),
+		// to zero and the equality stayed green): the expected values come
+		// from the source files, not from either run.
+		assert.Equal(t, crashTreeCreated(t, root), fx.OriginalTimestamps(),
 			"original-created timestamps must survive the spool and the restart, at their real values")
 	})
 }
