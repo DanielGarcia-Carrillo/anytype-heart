@@ -29,10 +29,10 @@ env:
 
 jobs:
   fork-main:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           token: ${{ secrets.FORK_TOKEN || github.token }}
@@ -74,7 +74,7 @@ jobs:
           git fetch --quiet "$UPSTREAM_URL" "+refs/heads/$UPSTREAM_BRANCH:refs/fork-main/upstream"
           echo "FORK_BASE=$(git merge-base HEAD refs/fork-main/upstream)" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         if: github.event_name != 'workflow_dispatch'
         with:
           go-version-file: go.mod
