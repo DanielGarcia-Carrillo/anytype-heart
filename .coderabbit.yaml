@@ -1,0 +1,17 @@
+version: 3
+# Keep the settings from the CodeRabbit app for everything this file leaves out.
+inheritance: true
+reviews:
+  behavior:
+    multi_repo_analysis:
+      # The Essentials plan activates one linked repository. The desktop client
+      # calls the widest set of commands; the Android client is
+      # DanielGarcia-Carrillo/anytype-kotlin if the plan allows more.
+      linked_repositories:
+        - repository: "DanielGarcia-Carrillo/anytype-ts"
+          instructions: >-
+            anytype-ts is the Electron desktop client that calls this middleware
+            over gRPC (src/ts/lib/api/command.ts sends commands, mapper.ts and
+            dispatcher.ts read responses and events). When a change renames,
+            removes or changes the meaning of a protobuf field, enum value, event
+            or relation key, check how the client uses it and flag breakage.
